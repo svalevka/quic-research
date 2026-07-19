@@ -13,29 +13,17 @@ Usage:
 import argparse
 import csv
 import os
-import subprocess
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import client as quicvstcp  # noqa: E402
+from netem import induce_loss, clear_loss  # noqa: E402
 
 import asyncio
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
 IMAGES_DIR = os.path.join(os.path.dirname(__file__), "..", "docs", "images")
-
-
-def ssh_cherry(cmd: str):
-    subprocess.run(["ssh", "cherry", cmd], check=True, capture_output=True, text=True)
-
-
-def induce_loss(pct: float, iface: str = "eth0"):
-    ssh_cherry(f"sudo tc qdisc replace dev {iface} root netem loss {pct}%")
-
-
-def clear_loss(iface: str = "eth0"):
-    ssh_cherry(f"sudo tc qdisc del dev {iface} root netem 2>/dev/null || true")
 
 
 async def run_trial(proto: str, host: str, port: int, cafile: str, streams: int, nbytes: int, chunk: int):

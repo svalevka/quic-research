@@ -7,11 +7,12 @@ lossy-condition trials.
 ## Topology
 
 - **Client**: your local machine, wherever it actually is. This repo's own
-  test run used a home network in London. Runs `src/client.py` and
-  `src/measure.py`.
+  test run used a home network in London. Runs `src/client.py`,
+  `src/measure.py`, and `src/measure_handshake.py`.
 - **Server**: a Linux VPS. This repo's own test run used a Hetzner Cloud
   instance (`hel1`, Helsinki) referred to as `cherry` in scripts and
-  commands below. Runs `src/tcp_server.py` and `src/quic_server.py`.
+  commands below. Runs `src/tcp_server.py`, `src/quic_server.py`, and (for
+  the DTLS handshake comparison) `openssl s_server -dtls1_2`.
 
 `tc netem` (Linux-only) is what injects loss, so it always runs **on the
 server**, regardless of what OS the client is. If your client happens to be
@@ -55,11 +56,13 @@ hcloud firewall add-rule quic-test --direction in --protocol tcp --port 5001 \
   --source-ips <your-ip>/32
 hcloud firewall add-rule quic-test --direction in --protocol udp --port 4433 \
   --source-ips <your-ip>/32
+hcloud firewall add-rule quic-test --direction in --protocol udp --port 4434 \
+  --source-ips <your-ip>/32
 hcloud firewall apply-to-resource quic-test --type server --server <your-server-name>
 ```
 
 Scoping every rule to `--source-ips <your-ip>/32` rather than `0.0.0.0/0` is
-deliberate: this opens exactly the two test ports, only to you, rather than
+deliberate: this opens exactly the test ports, only to you, rather than
 exposing an unauthenticated echo server to the entire internet. **This IP
 is your home connection's public egress IP, which most home ISPs assign
 dynamically** — if it changes between sessions, these rules stop matching
@@ -69,9 +72,14 @@ rule before debugging anything else, and update the rule if it's drifted.
 
 ### ufw, on the server itself
 
+Scope these to your IP too, the same way the Hetzner rules are —
+`sudo ufw allow <port>` alone opens it to the entire internet (`Anywhere`),
+not just you:
+
 ```bash
-sudo ufw allow 5001/tcp
-sudo ufw allow 4433/udp
+sudo ufw allow from <your-ip> to any port 5001 proto tcp
+sudo ufw allow from <your-ip> to any port 4433 proto udp
+sudo ufw allow from <your-ip> to any port 4434 proto udp
 sudo ufw status
 ```
 
@@ -88,17 +96,24 @@ pip install aioquic
 
 python3 tcp_server.py 5001 cert.pem key.pem &
 python3 quic_server.py 4433 cert.pem key.pem &
+openssl s_server -dtls1_2 -accept 4434 -cert cert.pem -key key.pem -quiet &
 ```
 
-Both are trivial echo servers — no request handling logic, just "send back
-whatever arrived on this stream" — so the client's timing measurements
-reflect network and protocol behavior, not server processing time.
+The first two are trivial echo servers — no request handling logic, just
+"send back whatever arrived on this stream" — so the client's timing
+measurements reflect network and protocol behavior, not server processing
+time. The DTLS listener is just the stock `openssl s_server` binary: it's
+only used for handshake timing (see [Where does DTLS fit in a client-server
+connection?](README.md#where-does-dtls-fit-in-a-client-server-connection)
+for why there's no DTLS echo/multi-stream test), so nothing custom is
+needed on the server side for it.
 
 ## 4. Injecting packet loss
 
-`src/measure.py` does this automatically via SSH before its lossy-condition
-trials, but the underlying commands (run **on the server**, not the client)
-are:
+`src/measure.py` (HOL blocking) and `src/measure_handshake.py`
+(connection-establishment cost, including DTLS) both do this automatically
+via SSH before their lossy-condition trials, but the underlying commands
+(run **on the server**, not the client) are:
 
 ```bash
 # induce loss on the server's real internet-facing interface

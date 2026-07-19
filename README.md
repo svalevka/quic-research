@@ -34,6 +34,7 @@ what a nonce is and why TCP is head-of-line blocked, skip to
 - [Retransmission: stream offset vs. packet number](#retransmission-stream-offset-vs-packet-number)
 - [QUIC's three handshake key levels](#quics-three-handshake-key-levels)
 - [HTTP/2 vs HTTP/3](#http2-vs-http3)
+- [Where does DTLS fit in a client-server connection?](#where-does-dtls-fit-in-a-client-server-connection)
 - [What this repository actually measures](#what-this-repository-actually-measures)
 - [How the test scripts work](#how-the-test-scripts-work)
 - [Results](#results)
@@ -279,6 +280,107 @@ sequenceDiagram
     Note over C,S: Whichever completes first wins.<br/>If UDP is blocked on this network,<br/>TCP always wins, permanently.
 ```
 
+## Where does DTLS fit in a client-server connection?
+
+Everything above compares two ways of securing a **web** connection. There's
+a third protocol worth placing on the map, because it's easy to mistake for
+a QUIC alternative when it's actually solving a much narrower problem:
+**DTLS** (Datagram Transport Layer Security).
+
+DTLS is TLS adapted to run over an unreliable, unordered transport —
+normally UDP — instead of TCP's ordered byte stream. It exists because
+TLS's record layer assumes reliable in-order delivery: recall from earlier
+that TLS derives each record's decryption nonce from an **implicit,
+counted** sequence number, which only works if you've received every prior
+record in order. DTLS fixes exactly that, and only that, by putting an
+**explicit sequence number directly in each record's header** — the same
+architectural idea QUIC uses for its packet numbers, except DTLS did it
+first (DTLS 1.0 dates to 2006; QUIC to 2016).
+
+That similarity raises a fair question: if DTLS already solved the
+implicit-nonce problem over UDP, why did QUIC need to exist at all? Because
+DTLS only ever solved the **crypto layer**. It hands you one encrypted,
+unordered, unreliable datagram pipe and stops there. It does not provide:
+
+- **Multiple multiplexed streams** — DTLS has no concept of "stream" at
+  all. If an application needs several independent logical channels, it has
+  to build that itself on top (WebRTC does exactly this: SCTP-over-DTLS,
+  where SCTP supplies multi-streaming and DTLS supplies only the
+  encryption).
+- **Reliability or retransmission for application data** — DTLS's own
+  retransmission logic covers just the *handshake* (which must complete
+  reliably); once the connection is up, application data is send-and-forget
+  unless the application adds its own retry logic.
+- **Congestion control or connection migration** — both absent, both left
+  to whatever the application layers on top.
+
+So the useful mental model isn't "DTLS is a QUIC alternative" — it's
+**DTLS occupies the same slot as TLS, not the same slot as QUIC.** QUIC
+bundles security *and* reliable multiplexed transport into one integrated
+protocol; DTLS only ever replaces the "TLS" box, leaving every transport
+concern to whatever protocol is chosen to sit alongside it:
+
+```mermaid
+flowchart LR
+    subgraph http2["Web browsing: HTTP/2"]
+        direction TB
+        A1["HTTP/2<br/>(framing, multiplexing)"] --> A2["TLS<br/>(security)"] --> A3["TCP<br/>(reliable, ordered transport)"] --> A4["IP"]
+    end
+    subgraph http3["Web browsing: HTTP/3"]
+        direction TB
+        B1["HTTP/3<br/>(framing)"] --> B2["QUIC<br/>(security + reliable,<br/>multiplexed transport -- combined)"] --> B3["UDP"] --> B4["IP"]
+    end
+    subgraph coap["IoT request/response: CoAP"]
+        direction TB
+        C1["CoAP<br/>(request/response)"] --> C2["DTLS<br/>(security only)"] --> C3["UDP"] --> C4["IP"]
+    end
+```
+
+Notice DTLS sits in exactly the box TLS occupies in the HTTP/2 stack — not
+in the box QUIC occupies in the HTTP/3 stack. **CoAP** (Constrained
+Application Protocol) is a good concrete example to anchor this: it's a
+lightweight HTTP-like request/response protocol built for IoT devices and
+constrained networks, and "CoAP over DTLS" (sometimes written "CoAPs") is
+directly analogous to "HTTP over TLS," just for a client-server exchange
+that doesn't need HTTP/2-style multiplexing in the first place — one
+request, one response, over UDP, secured by DTLS. Here's what that
+connection actually looks like, including the round trip that's specific to
+DTLS 1.2 — a stateless cookie exchange, required before the server commits
+any real resources to the handshake, specifically to prevent DTLS being
+abused for UDP source-address-spoofing amplification attacks:
+
+```mermaid
+sequenceDiagram
+    participant C as IoT Client
+    participant S as Cloud Server
+    Note over C,S: DTLS 1.2 round trip 1: stateless cookie exchange
+    C->>S: ClientHello (no cookie)
+    S->>C: HelloVerifyRequest (cookie)
+    Note over C,S: DTLS 1.2 round trip 2: real handshake
+    C->>S: ClientHello (with cookie)
+    S->>C: ServerHello, cert, ServerHelloDone
+    C->>S: ClientKeyExchange, Finished
+    S->>C: Finished
+    Note over C,S: Secure channel established
+    C->>S: CoAP GET /sensors/temperature
+    S->>C: CoAP 2.05 Content: 21.4
+```
+
+That's already two round trips before any application data moves — on top
+of a transport (UDP) that's supposed to be the "fast" one. This is the same
+lesson as Problem A, told a different way: switching to UDP alone buys
+nothing; QUIC's actual innovation is folding transport and crypto
+negotiation into one integrated exchange, which DTLS-as-a-bolt-on-layer
+doesn't do.
+
+DTLS shows up in a few other real deployments worth knowing, beyond CoAP:
+**WebRTC** uses DTLS-SRTP to secure audio/video and SCTP-over-DTLS for its
+data channels (after peers find each other via a separate signaling step,
+typically plain HTTPS), and some **VPN** products (OpenConnect/AnyConnect
+being the best-known) run their bulk data tunnel over DTLS after an initial
+TLS-over-TCP control connection, specifically to avoid the performance
+problems of tunneling TCP traffic inside another TCP connection.
+
 ## What this repository actually measures
 
 Given all of the above, this repository's live test demonstrates one
@@ -294,6 +396,15 @@ matters isn't just "how much slower did things get" — it's *how many
 streams got pulled into that slowdown together* each time loss actually hit.
 See [Results](#results) for why that distinction matters and how it's
 measured.
+
+DTLS is also measured, but only at the connection-establishment level
+alongside TCP+TLS and QUIC — both a clean-path baseline and completion time
+under the same induced loss. It's deliberately **not** included in the
+per-stream HOL-blocking comparison above, for the reason covered in
+[Where does DTLS fit in a client-server connection?](#where-does-dtls-fit-in-a-client-server-connection):
+DTLS has no stream concept, so there's nothing for a lost packet to isolate
+damage *away from* — the comparison wouldn't measure DTLS, it would measure
+whatever ad hoc multiplexing scheme got bolted on top of it.
 
 ## How the test scripts work
 
@@ -343,10 +454,12 @@ single-stream throughput numbers referenced above.
 
 ## Results
 
-All numbers below are from a real run of this repository's own test, London
+All numbers below are from real runs of this repository's own tests, London
 laptop to the Helsinki VPS, captured on 2026-07-19. Raw data is in
-[`results/hol_results.csv`](results/hol_results.csv); regenerate any of it
-with `python src/measure.py`.
+[`results/hol_results.csv`](results/hol_results.csv) (regenerate with
+`python src/measure.py`) and
+[`results/handshake_results.csv`](results/handshake_results.csv)
+(regenerate with `python src/measure_handshake.py`).
 
 ### Handshake cost (Problem A)
 
@@ -364,6 +477,83 @@ while QUIC's ~72ms median reflects folding transport and crypto negotiation
 into essentially one round trip's worth of wall-clock time. QUIC's max
 (165.5ms) shows real-world jitter exists on both sides of this comparison —
 this is a live internet path, not a lab bench.
+
+#### Adding DTLS: a three-way comparison, and a real debugging trail
+
+Extending this to DTLS (`src/measure_handshake.py`) took several honest
+detours worth recording, because each one is itself informative about
+testing real protocols on a real network rather than a lab bench:
+
+1. **Real ambient network noise.** An early run produced numbers 2–5x worse
+   across *all three* protocols, including baseline. `ping` explained why:
+   the London–Helsinki path was independently experiencing 10–33% ambient
+   loss and multi-second RTT spikes at that moment, unrelated to anything
+   this repo was doing. It recovered on its own within minutes.
+2. **A real bug in this test's own harness.** `dtls_handshake_once`
+   originally `SIGKILL`ed the `openssl s_client` subprocess right after
+   capturing the handshake-complete timestamp, to avoid measuring DTLS's
+   own (slow, irrelevant) shutdown teardown. But killing it mid-shutdown
+   left `openssl s_server` on the other end holding half-torn-down
+   connection state — confirmed by a clear failure signature (trials
+   succeed for a while, then fail in complete blocks) that had nothing to
+   do with network conditions. Fixed by letting the client shut down
+   gracefully in the background instead of killing it.
+3. **A self-inflicted SSH rate limit.** Restarting the DTLS server between
+   every attempt (to rule out server-side state as a variable) meant enough
+   rapid SSH connections that `ufw`'s built-in brute-force limiter
+   (`22/tcp LIMIT`, visible in `SETUP.md`) started refusing SSH outright —
+   `Connection refused`, not a timeout. Fixed by pacing attempts further
+   apart and not restarting the server on every single one.
+4. **A genuine, only-partially-explained protocol-implementation finding.**
+   Two different `openssl s_server -dtls1_2` instances, run with the
+   identical command, behaved differently: one consistently performed the
+   full cookie exchange (`openssl s_client -dtls1_2 -state` showed a
+   duplicated `ClientHello`, `HelloVerifyRequest`, then the real handshake —
+   matching the [DTLS 1.2 sequence diagram](#where-does-dtls-fit-in-a-client-server-connection)
+   earlier, at a cost of ~150ms), while a second instance — after a
+   restart — consistently skipped it entirely (`-state` showed a single
+   `ClientHello` straight through to a valid session, at ~55ms). This is
+   confirmed directly via two separate `-state` traces, not inferred from
+   noisy timing data. DTLS 1.2's cookie exchange is *optional* by spec (RFC
+   6347) — a server may skip it — so this is plausibly OpenSSL choosing
+   differently between the two instances rather than a bug, but this
+   repo's data can't say definitively *why* one instance made a different
+   choice than the other. That's an honest limit of testing against one
+   reference implementation from the outside, not a gap worth papering
+   over.
+
+The final dataset below is aggregated from 10 independent attempts (5
+trials/protocol/condition each, 300 rows total, zero failures) against the
+server instance that skips the cookie exchange — the one currently
+running:
+
+![Handshake cost: TCP+TLS vs QUIC vs DTLS](docs/images/handshake_comparison.png)
+
+| | baseline min | baseline median | baseline mean | baseline max | lossy min | lossy median | lossy mean | lossy max |
+|---|---|---|---|---|---|---|---|---|
+| TCP+TLS | 92.1ms | 95.6ms | 116.4ms | 618.0ms | 91.1ms | 95.8ms | 130.0ms | 1100.1ms |
+| QUIC | 54.5ms | 64.1ms | 66.6ms | 112.8ms | 56.2ms | 63.6ms | 77.2ms | 204.0ms |
+| DTLS | 52.2ms | 56.9ms | 58.2ms | 73.8ms | 51.4ms | 57.5ms | 177.9ms | 3068.1ms |
+
+Two things stand out, and neither is what a first guess would predict:
+
+- **DTLS's *typical* (median) cost here is lower than even QUIC's**, not
+  higher — because, for this server instance, there's no cookie round trip
+  actually happening. This is a direct consequence of finding #4 above: the
+  "DTLS costs an extra round trip" story from the sequence diagram earlier
+  is real and reproducible, but only when the server chooses to enforce it.
+- **DTLS's *tail* under loss is dramatically worse than its median
+  suggests, and worse than either other protocol's tail.** The mean jumps
+  from 58ms to 178ms under loss (versus TCP+TLS's 116→130ms and QUIC's
+  67→77ms) — driven by rare but severe outliers, including one 3068ms
+  handshake. Reporting only the median here would hide the most operationally
+  relevant fact: **whatever server-side machinery makes DTLS's cookie-free
+  path fast on a clean connection appears to recover far more slowly than
+  TCP+TLS or QUIC when a handshake packet is actually lost.**
+
+Both are genuine measurements, not artifacts of the debugging trail above —
+each was independently reproduced across 10 separate attempts run at
+different times, well after every known harness bug was fixed.
 
 ### Head-of-line blocking (Problem B)
 
@@ -447,6 +637,18 @@ one-straggler case to measure.
   "independently-decryptable packets across independent streams," and it
   showed up in real, uncontrolled loss on a real path — not a simulation
   built to make the point look clean.
+- **DTLS's per-handshake cost depends on a server-side choice that this
+  repo's data can observe but not fully explain.** Two `openssl s_server`
+  instances, launched with the identical command, differed reproducibly:
+  one always ran the DTLS 1.2 cookie exchange (~150ms), the other never did
+  (~55ms) — confirmed directly via `-state` traces, not guessed from noisy
+  timing alone. Whichever mode is active, DTLS's *tail* latency under real
+  loss was consistently the worst of the three protocols (mean handshake
+  time roughly tripled under 5% loss, versus a much smaller increase for
+  TCP+TLS and QUIC), even in the fast/no-cookie mode. That asymmetry between
+  "typical cost can look great" and "worst case is meaningfully worse" is a
+  real, repeatable finding, not a byproduct of the debugging process that
+  produced it.
 
 **What this test did *not* prove, and shouldn't be read as showing:**
 
@@ -474,6 +676,14 @@ one-straggler case to measure.
   paths have jitter, and QUIC isn't immune to it. The claim this test
   supports is specifically about round-trip *count* and per-stream
   *isolation*, not "QUIC wins every single trial."
+- **Why DTLS's two server instances chose differently on the cookie
+  exchange.** This is observed and reproduced, not explained. It would take
+  reading OpenSSL's own cookie-generation logic, or testing a second,
+  independent DTLS implementation, to know whether this is
+  OpenSSL-specific, configuration-dependent, or something else — squarely
+  out of scope for a network-behavior benchmark like this one. Treat the
+  DTLS numbers as "what this one reference implementation did, twice,
+  differently" rather than "what DTLS 1.2 costs" in general.
 
 ## Running it yourself
 

@@ -1,10 +1,13 @@
 """
-TCP vs QUIC comparison client.
+TCP vs QUIC vs DTLS comparison client.
 
 Subcommands:
-  handshake <tcp|quic> <host> <port> [--trials N]
+  handshake <tcp|quic|dtls> <host> <port> [--trials N]
   throughput <tcp|quic> <host> <port> [--sizes 1024,65536,...] [--trials N]
   hol <tcp|quic> <host> <port> [--streams N] [--bytes N] [--chunk N]
+
+DTLS is only supported for `handshake` -- it has no stream concept, so
+`throughput` and `hol` (which measure per-stream behavior) don't apply.
 """
 import argparse
 import asyncio
@@ -53,13 +56,81 @@ async def quic_handshake_once(host, port, cafile):
     return dt
 
 
+async def _read_until_verify(stdout):
+    lines = []
+    while True:
+        line = await stdout.readline()
+        if not line:
+            break
+        text = line.decode(errors="replace")
+        lines.append(text)
+        if "Verify return code:" in text:
+            break
+    return "".join(lines)
+
+
+async def _drain_and_wait(proc, timeout=5.0):
+    # Let the process finish its own DTLS shutdown (close_notify) rather
+    # than being killed. Killing it mid-shutdown was found to leave the
+    # single long-running openssl s_server on the other end holding
+    # half-torn-down connection state, which eventually made it stop
+    # completing new handshakes correctly after enough abrupt kills -- a
+    # real bug in this test's own methodology, not network flakiness.
+    try:
+        await asyncio.wait_for(proc.stdout.read(), timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
+    if proc.returncode is None:
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+
+
+async def dtls_handshake_once(host, port, cafile, timeout=10.0):
+    # No DTLS support in the stdlib ssl module, so this shells out to the
+    # openssl CLI. Timing therefore includes process-spawn overhead that the
+    # in-process tcp/quic handshakes don't pay -- a small, roughly constant
+    # bias on top of the real handshake cost. We stop the clock the instant
+    # the "Verify return code" summary line appears (right after the
+    # handshake completes) rather than waiting for the process to exit --
+    # openssl s_client's own DTLS close_notify teardown after that point can
+    # take several hundred ms on its own and has nothing to do with how long
+    # the handshake itself took. The process itself is left running in the
+    # background to shut down gracefully (see _drain_and_wait) instead of
+    # being killed.
+    t0 = time.perf_counter()
+    proc = await asyncio.create_subprocess_exec(
+        "openssl", "s_client", "-dtls1_2", "-connect", f"{host}:{port}", "-CAfile", cafile,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        output = await asyncio.wait_for(_read_until_verify(proc.stdout), timeout=timeout)
+    except asyncio.TimeoutError:
+        # Genuinely stuck (no response at all) -- unlike the success path,
+        # there's no handshake to protect the server's state for here.
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"DTLS handshake timed out after {timeout}s")
+    dt = time.perf_counter() - t0
+    asyncio.create_task(_drain_and_wait(proc))
+    if "Verify return code: 0 (ok)" not in output:
+        raise RuntimeError(f"DTLS handshake failed: {output[-300:]}")
+    return dt
+
+
 async def cmd_handshake(args):
     times = []
     for i in range(args.trials):
         if args.proto == "tcp":
             dt = await tcp_handshake_once(args.host, args.port, args.cafile)
-        else:
+        elif args.proto == "quic":
             dt = await quic_handshake_once(args.host, args.port, args.cafile)
+        else:
+            dt = await dtls_handshake_once(args.host, args.port, args.cafile)
         times.append(dt)
         print(f"  trial {i+1}: {dt*1000:.2f} ms")
     times.sort()
@@ -286,9 +357,14 @@ def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    proto_choices = {
+        "handshake": ["tcp", "quic", "dtls"],
+        "throughput": ["tcp", "quic"],
+        "hol": ["tcp", "quic"],
+    }
     for name, fn in [("handshake", cmd_handshake), ("throughput", cmd_throughput), ("hol", cmd_hol)]:
         sp = sub.add_parser(name)
-        sp.add_argument("proto", choices=["tcp", "quic"])
+        sp.add_argument("proto", choices=proto_choices[name])
         sp.add_argument("host")
         sp.add_argument("port", type=int)
         sp.add_argument("--trials", type=int, default=5)
