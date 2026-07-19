@@ -2,10 +2,13 @@
 
 This repository runs a real network test — not a simulation — comparing QUIC
 against classic TCP+TLS. The client is a laptop on a home network in London;
-the server is a Hetzner Cloud VPS in Helsinki, Finland. Traffic crosses the
-real internet, with a real round trip time of roughly 45–55ms. No artificial
-delay is added anywhere. Packet loss, where used, is injected for real with
-`tc netem` on the server's network interface.
+the server is a Linux (Ubuntu) Hetzner Cloud VPS in Helsinki, Finland,
+referred to throughout this repo's scripts and docs as `cherry`. Traffic
+crosses the real internet, with a real round trip time of roughly 45–55ms.
+No artificial delay is added anywhere. Packet loss, where used, is injected
+for real with `tc netem` on `cherry`'s network interface — a Linux-only
+tool, which is also why loss injection happens server-side rather than on
+the (macOS) client; see [How the test scripts work](#how-the-test-scripts-work).
 
 The goal is to make two specific, falsifiable claims concrete:
 
