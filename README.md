@@ -535,25 +535,37 @@ running:
 | QUIC | 54.5ms | 64.1ms | 66.6ms | 112.8ms | 56.2ms | 63.6ms | 77.2ms | 204.0ms |
 | DTLS | 52.2ms | 56.9ms | 58.2ms | 73.8ms | 51.4ms | 57.5ms | 177.9ms | 3068.1ms |
 
-Two things stand out, and neither is what a first guess would predict:
+Two things stand out across all three protocols, and neither is what a
+first guess would predict:
 
-- **DTLS's *typical* (median) cost here is lower than even QUIC's**, not
-  higher — because, for this server instance, there's no cookie round trip
-  actually happening. This is a direct consequence of finding #4 above: the
-  "DTLS costs an extra round trip" story from the sequence diagram earlier
-  is real and reproducible, but only when the server chooses to enforce it.
-- **DTLS's *tail* under loss is dramatically worse than its median
-  suggests, and worse than either other protocol's tail.** The mean jumps
-  from 58ms to 178ms under loss (versus TCP+TLS's 116→130ms and QUIC's
-  67→77ms) — driven by rare but severe outliers, including one 3068ms
-  handshake. Reporting only the median here would hide the most operationally
-  relevant fact: **whatever server-side machinery makes DTLS's cookie-free
-  path fast on a clean connection appears to recover far more slowly than
-  TCP+TLS or QUIC when a handshake packet is actually lost.**
+- **On a clean path, the ordering isn't what the sequence diagrams alone
+  would suggest.** QUIC (median 64.1ms) beating TCP+TLS (95.6ms) matches
+  the round-trip-count story from earlier — one folded exchange against two
+  sequential ones. But DTLS's median (56.9ms) comes in **lower than QUIC's
+  too**, not in between QUIC and TCP+TLS as the DTLS 1.2 sequence diagram
+  earlier would imply. That's because, for this server instance, there's no
+  cookie round trip actually happening. The "DTLS costs an extra round
+  trip" story is real and reproducible (see finding #4 above) — but only
+  when the server chooses to enforce it, and here it doesn't.
+- **Under loss, all three protocols get worse, but by very different
+  amounts, and the size of the effect doesn't track the clean-path
+  ordering at all.** TCP+TLS's mean rose the least in relative terms
+  (116.4→130.0ms, +12%), with its worst case roughly doubling
+  (618→1100ms). QUIC moved a bit more (66.6→77.2ms, +16% mean;
+  112.8→204ms max, also roughly doubling). DTLS — the protocol with the
+  *best* clean-path median of the three — reacted to loss far worse than
+  either: its mean nearly tripled (58.2→177.9ms, +206%) and its worst case
+  blew out 42x (73.8→3068.1ms), driven by rare but severe outliers rather
+  than a uniform shift. Reporting only the median would hide the most
+  operationally relevant fact here: whatever server-side machinery makes
+  DTLS's cookie-free path fast on a clean connection recovers far more
+  slowly than either TCP+TLS or QUIC when a handshake packet is actually
+  lost.
 
-Both are genuine measurements, not artifacts of the debugging trail above —
-each was independently reproduced across 10 separate attempts run at
-different times, well after every known harness bug was fixed.
+All of these are genuine measurements, not artifacts of the debugging
+trail above — each was independently reproduced across 10 separate
+attempts run at different times, well after every known harness bug was
+fixed.
 
 ### Head-of-line blocking (Problem B)
 
