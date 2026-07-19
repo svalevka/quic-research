@@ -30,7 +30,6 @@ what a nonce is and why TCP is head-of-line blocked, skip to
 - [QUIC's fix, at the same packet level](#quics-fix-at-the-same-packet-level)
 - [Retransmission: stream offset vs. packet number](#retransmission-stream-offset-vs-packet-number)
 - [QUIC's three handshake key levels](#quics-three-handshake-key-levels)
-- [Two common misconceptions, corrected](#two-common-misconceptions-corrected)
 - [HTTP/2 vs HTTP/3](#http2-vs-http3)
 - [What this repository actually measures](#what-this-repository-actually-measures)
 - [How the test scripts work](#how-the-test-scripts-work)
@@ -231,32 +230,6 @@ progresses, each protecting a different part of the exchange:
 This maps directly onto TLS 1.3's own key schedule — QUIC doesn't invent new
 cryptography, it *carries* TLS 1.3 inside its packets, encrypted with keys
 appropriate to how far the handshake has progressed.
-
-## Two common misconceptions, corrected
-
-**"The shared secret comes from the domain registrar."** No. Domain
-registration (who owns `example.com`) and TLS certificate issuance are
-unrelated systems. The shared secret comes from a direct (EC)DHE key
-exchange computed live between client and server during the handshake shown
-above — a fresh, ephemeral secret, never sent over the wire, that neither
-side knew before the handshake started. The *certificate* is what lets the
-client trust that it's doing this exchange with the real server and not an
-impostor; that certificate is issued and signed by a Certificate Authority
-that both parties already trust, entirely separate from domain registration.
-
-**"QUIC libraries like ngtcp2 are Linux-specific kernel tools."** No.
-Implementations like ngtcp2, quiche, and aioquic (used in this repository)
-are **portable userspace libraries** — they run identically on Linux, macOS,
-Windows, or wherever their host language runs, because QUIC is built
-entirely on ordinary UDP sockets, which every general-purpose OS provides.
-There's no kernel module, no special privilege, nothing OS-specific about
-the protocol itself. It's also worth being precise about scope: a library
-like ngtcp2 handles QUIC's **transport** concerns only — packet framing,
-loss detection, congestion control, stream multiplexing. It does not
-implement TLS cryptography itself; it's paired with a separate TLS engine
-(OpenSSL, BoringSSL, picotls, or in this repository's case, Python's `ssl`
-module via aioquic's own integration) that handles the actual handshake
-cryptography and hands QUIC the resulting keys.
 
 ## HTTP/2 vs HTTP/3
 
