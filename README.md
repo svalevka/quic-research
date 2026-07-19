@@ -36,6 +36,7 @@ what a nonce is and why TCP is head-of-line blocked, skip to
 - [HTTP/2 vs HTTP/3](#http2-vs-http3)
 - [Where does DTLS fit in a client-server connection?](#where-does-dtls-fit-in-a-client-server-connection)
 - [What this repository actually measures](#what-this-repository-actually-measures)
+- [Testing scenarios](#testing-scenarios)
 - [How the test scripts work](#how-the-test-scripts-work)
 - [Results](#results)
 - [Running it yourself](#running-it-yourself)
@@ -405,6 +406,35 @@ per-stream HOL-blocking comparison above, for the reason covered in
 DTLS has no stream concept, so there's nothing for a lost packet to isolate
 damage *away from* — the comparison wouldn't measure DTLS, it would measure
 whatever ad hoc multiplexing scheme got bolted on top of it.
+
+## Testing scenarios
+
+A single place listing every scenario this repo measures (or intends to),
+separate from the narrative sections above.
+
+**Implemented:**
+
+- **Handshake cost** — TCP+TLS vs QUIC vs DTLS, 15 (TCP/QUIC) or 5
+  (DTLS, per condition) fresh-connection trials, clean path and under 5%
+  induced loss. See [Handshake cost (Problem A)](#handshake-cost-problem-a).
+- **Head-of-line blocking** — TCP+TLS vs QUIC, 4 concurrent streams per
+  connection, single small payload per stream, 40 trials per protocol
+  clean and 40 more under 5% induced loss. See
+  [Head-of-line blocking (Problem B)](#head-of-line-blocking-problem-b).
+
+**TODO:**
+
+- **Naked UDP burst vs. QUIC multishot send** — as suggested by Pavel: add
+  a raw/unencrypted UDP baseline (no TLS, no QUIC framing — the
+  theoretical floor) and drive it with a real *series* of packets sent in
+  a burst, not just 2-3. Compare that against QUIC pushed through the same
+  kind of burst (parallel streams, sent via io_uring multishot/batched
+  submission rather than one send syscall per packet). The hypothesis
+  being tested: QUIC should pull ahead of naive raw UDP specifically
+  under parallel/bulk dispatch — its stream multiplexing and packet
+  pipelining are built for many packets in flight at once — whereas a
+  naive one-packet-at-a-time raw UDP loop gets no benefit from that
+  design. Not yet implemented; tracked here for a separate pass.
 
 ## How the test scripts work
 
