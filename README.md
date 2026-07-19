@@ -273,7 +273,7 @@ sequenceDiagram
     and
         C->>S: TCP+TLS handshake attempt (fallback)
     end
-    Note over C,S: Whichever completes first wins;<br/>if UDP is blocked on this network,<br/>TCP always wins, permanently
+    Note over C,S: Whichever completes first wins.<br/>If UDP is blocked on this network,<br/>TCP always wins, permanently.
 ```
 
 ## What this repository actually measures
