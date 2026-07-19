@@ -426,6 +426,52 @@ pattern is rare on TCP in the first place, per the distribution chart above:
 loss on TCP+TLS usually doesn't stay isolated long enough to produce a clean
 one-straggler case to measure.
 
+### Conclusions
+
+**What this test proved, with real measurements on a real internet path:**
+
+- **QUIC establishes a usable connection faster than TCP+TLS.** ~72ms
+  median vs. ~101ms median on a path with ~45–55ms RTT — consistent with
+  QUIC folding transport and crypto negotiation into roughly one round trip
+  instead of two sequential ones. This is a direct, repeatable measurement,
+  not an inference.
+- **Packet loss on TCP+TLS tends to delay multiple streams together; packet
+  loss on QUIC tends to stay confined to the one stream that lost a
+  packet.** When a loss event caused any visible delay, TCP+TLS pulled 3 of
+  4 streams down together in two-thirds of those cases; QUIC isolated the
+  damage to exactly 1 of 4 streams in nearly two-thirds of its own cases.
+  That's the inverse pattern you'd expect from "one ordered byte pipe" vs.
+  "independently-decryptable packets across independent streams," and it
+  showed up in real, uncontrolled loss on a real path — not a simulation
+  built to make the point look clean.
+
+**What this test did *not* prove, and shouldn't be read as showing:**
+
+- **Statistical rigor beyond "directionally clear."** 15 handshake trials
+  and 40 HOL trials per condition, on one real (and therefore noisy) path,
+  is enough to see a strong, consistent pattern — it is not a
+  publication-grade sample. The TCP "collateral damage" comparison in
+  particular rests on just 1 cleanly-isolated trial (3 data points) and
+  shouldn't be trusted as a precise number, only as consistent with the
+  broader distribution chart.
+- **Behavior across a matrix of conditions.** This ran at one loss rate
+  (5%), one RTT (~50ms), one stream count (4), and one payload size
+  (deliberately tiny, to isolate the HOL-blocking signal cleanly from
+  direct per-stream loss recovery). It says nothing about how the gap
+  changes at higher loss, longer RTT, more streams, or larger payloads —
+  each would need its own run.
+- **Real browser or CDN behavior.** No 0-RTT session resumption, no
+  Alt-Svc racing, no real congestion-control tuning beyond each library's
+  defaults, no concurrent unrelated traffic. This measures the two
+  transport-layer mechanisms directly, with everything else stripped away
+  — which is what makes the comparison clean, but also what makes it
+  narrower than "how much faster will my website be on HTTP/3."
+- **That QUIC is strictly better in every dimension.** QUIC's handshake max
+  (165.5ms) exceeded TCP+TLS's max (113.4ms) in the 15-trial sample — real
+  paths have jitter, and QUIC isn't immune to it. The claim this test
+  supports is specifically about round-trip *count* and per-stream
+  *isolation*, not "QUIC wins every single trial."
+
 ## Running it yourself
 
 See [SETUP.md](SETUP.md) for firewall configuration (Hetzner Cloud firewall
